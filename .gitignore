@@ -1,0 +1,12 @@
+node_modules/
+**/node_modules/
+.env
+**/.env
+*.env
+dist/
+build/
+**/dist/
+*.log
+.DS_Store
+init.sql
+update.sql

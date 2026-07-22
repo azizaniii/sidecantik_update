@@ -1,0 +1,53 @@
+name: sidecantik
+networks:
+  npm_web:
+    external: true
+    name: homeserver_web
+  sidecantik_internal:
+    driver: bridge
+volumes:
+  db_data:
+services:
+  db:
+    image: mysql:8.0.30
+    container_name: sidecantik_db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+      MYSQL_DATABASE: sidecantik
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - sidecantik_internal
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 90s
+  backend:
+    build: ./backend-sidecantik-beta
+    container_name: sidecantik_backend
+    restart: unless-stopped
+    environment:
+      - DB_HOST=db
+      - DB_USER=sidecantik_app
+      - DB_PASS=${APP_DB_PASSWORD}
+      - DB_NAME=sidecantik
+      - PORT=3001
+      - JWT_SECRET=${JWT_SECRET}
+    networks:
+      - sidecantik_internal
+    depends_on:
+      db:
+        condition: service_healthy
+  frontend:
+    build: ./sidecantik-beta
+    container_name: sidecantik_frontend
+    restart: unless-stopped
+    networks:
+      - sidecantik_internal
+      - npm_web
+    depends_on:
+      - backend
