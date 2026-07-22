@@ -66,7 +66,7 @@ router.post('/users', requireRole('SUPERADMIN', 'KEPALA DESA'), async (req, res)
       'INSERT INTO users (id_user, email, password, nama, role) VALUES (?, ?, ?, ?, ?)',
       [userId, email, hashedPassword, nama, role || 'AGEN STATISTIK']
     );
-    res.json({ success: true, message: "User baru berhasil disimpan!" });
+    res.json({ success: true, message: "User baru berhasil disimpan!", id_user: userId });
   } catch (error) {
     console.error("Error simpan user:", error);
     if (error.code === 'ER_DUP_ENTRY') {
@@ -195,6 +195,86 @@ router.get('/export/:table', requireRole('SUPERADMIN', 'KEPALA DESA', 'SEKRETARI
   } catch (error) {
     console.error("Error export:", error);
     res.status(500).json({ success: false, message: "Gagal mengekspor data." });
+  }
+});
+
+// 5. ENDPOINT: Hierarki wilayah untuk dropdown (Desa > Dusun > SLS)
+router.get('/wilayah-hierarchy', requireRole('SUPERADMIN', 'KEPALA DESA', 'SEKRETARIS DESA'), async (req, res) => {
+  try {
+    const [desa] = await db.query('SELECT id_desa AS id, nama_desa AS nama FROM desa ORDER BY nama_desa');
+    const [dusun] = await db.query('SELECT id_dusun AS id, nama_dusun AS nama, id_desa FROM dusun ORDER BY nama_dusun');
+    const [sls] = await db.query('SELECT id_sls AS id, nama_sls AS nama, id_dusun FROM sls ORDER BY nama_sls');
+    res.json({ success: true, data: { desa, dusun, sls } });
+  } catch (error) {
+    console.error("Error ambil hierarki wilayah:", error);
+    res.status(500).json({ success: false, message: "Gagal mengambil data wilayah." });
+  }
+});
+
+// 6. ENDPOINT: Ambil wilayah tugas milik satu user
+router.get('/users/:id_user/wilayah', requireRole('SUPERADMIN', 'KEPALA DESA', 'SEKRETARIS DESA'), async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      `SELECT wt.id_sls, s.nama_sls, s.id_dusun, d.nama_dusun
+       FROM wilayah_tugas wt
+       JOIN sls s ON wt.id_sls = s.id_sls
+       JOIN dusun d ON s.id_dusun = d.id_dusun
+       WHERE wt.id_user = ?`,
+      [req.params.id_user]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error("Error ambil wilayah user:", error);
+    res.status(500).json({ success: false, message: "Gagal mengambil wilayah tugas user." });
+  }
+});
+
+// 7. ENDPOINT: Set wilayah tugas user (hapus yang lama, ganti dengan yang baru)
+// Body: { role: 'KETUA RT', id_sls: '...' } ATAU { role: 'KEPALA DUSUN', id_dusun: '...' }
+router.put('/users/:id_user/wilayah', requireRole('SUPERADMIN', 'KEPALA DESA', 'SEKRETARIS DESA'), async (req, res) => {
+  const { id_user } = req.params;
+  const { role, id_sls, id_dusun } = req.body;
+
+  const ROLE_BUTUH_WILAYAH = ['KEPALA DUSUN', 'KETUA RT'];
+  if (!ROLE_BUTUH_WILAYAH.includes(role)) {
+    return res.status(400).json({ success: false, message: "Role ini tidak memerlukan wilayah tugas." });
+  }
+
+  const connection = await db.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    // Hapus wilayah tugas lama user ini (ganti total, bukan tambah)
+    await connection.query('DELETE FROM wilayah_tugas WHERE id_user = ?', [id_user]);
+
+    let daftarSlsBaru = [];
+
+    if (role === 'KETUA RT') {
+      if (!id_sls) throw new Error("id_sls wajib diisi untuk role KETUA RT.");
+      daftarSlsBaru = [id_sls];
+    } else if (role === 'KEPALA DUSUN') {
+      if (!id_dusun) throw new Error("id_dusun wajib diisi untuk role KEPALA DUSUN.");
+      const [slsDalamDusun] = await connection.query('SELECT id_sls FROM sls WHERE id_dusun = ?', [id_dusun]);
+      daftarSlsBaru = slsDalamDusun.map(row => row.id_sls);
+      if (daftarSlsBaru.length === 0) throw new Error("Dusun ini belum punya SLS terdaftar.");
+    }
+
+    for (const idSls of daftarSlsBaru) {
+      const idWilayahTugas = crypto.randomUUID();
+      await connection.query(
+        'INSERT INTO wilayah_tugas (id_wilayah_tugas, id_user, id_sls) VALUES (?, ?, ?)',
+        [idWilayahTugas, id_user, idSls]
+      );
+    }
+
+    await connection.commit();
+    res.json({ success: true, message: "Wilayah tugas berhasil diperbarui." });
+  } catch (error) {
+    await connection.rollback();
+    console.error("Error set wilayah tugas:", error);
+    res.status(500).json({ success: false, message: error.message || "Gagal memperbarui wilayah tugas." });
+  } finally {
+    connection.release();
   }
 });
 

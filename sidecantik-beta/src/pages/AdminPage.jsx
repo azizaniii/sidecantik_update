@@ -69,6 +69,8 @@ const AdminPage = () => {
   const [dataPenduduk, setDataPenduduk] = useState([]);
   const [isLoadingPenduduk, setIsLoadingPenduduk] = useState(false);
   const [searchPenduduk, setSearchPenduduk] = useState('');
+// Wilayah hierarchy (Desa > Dusun > SLS), dipakai untuk form assign wilayah tugas
+  const [wilayahHierarchy, setWilayahHierarchy] = useState({ desa: [], dusun: [], sls: [] });
 
   // ---- Autentikasi dari Sesi Login API (localStorage) ----
   useEffect(() => {
@@ -178,12 +180,23 @@ const AdminPage = () => {
     }
   }, [apiFetch, searchPenduduk]);
 
+  const fetchWilayahHierarchy = useCallback(async () => {
+    try {
+      const res = await apiFetch(`${API_BASE}/wilayah-hierarchy`);
+      const json = await res.json();
+      if (res.ok && json.success) setWilayahHierarchy(json.data);
+    } catch (err) {
+      console.error('Gagal memuat data wilayah', err);
+    }
+  }, [apiFetch]);
+
   useEffect(() => {
     if (currentUser) {
       fetchSummary();
       fetchUsers();
+      fetchWilayahHierarchy();
     }
-  }, [currentUser, fetchSummary, fetchUsers]);
+  }, [currentUser, fetchSummary, fetchUsers, fetchWilayahHierarchy]);
 
   useEffect(() => {
     if (activeTab === 'data_kependudukan' && currentUser) {
@@ -215,7 +228,7 @@ const AdminPage = () => {
   // ---- CRUD User (dihubungkan ke /api/admin/users) ----
   const handleSaveUser = async (formData) => {
     try {
-      const payload = { ...formData };
+      const { id_sls, id_dusun, ...payload } = formData;
       if (editingUser && !payload.password) delete payload.password;
 
       const res = await apiFetch(
@@ -228,6 +241,24 @@ const AdminPage = () => {
       );
       const json = await res.json();
       if (!res.ok || !json.success) throw new Error(json.message || 'Gagal menyimpan user');
+
+      // Kalau role butuh wilayah tugas (KEPALA DUSUN / KETUA RT), simpan wilayahnya sekarang.
+      // Untuk user baru, id_user diambil dari response backend kalau tersedia; kalau tidak,
+      // kita perlu id_user hasil dari fetchUsers berikutnya — jadi khusus edit user existing dulu.
+      const ROLE_BUTUH_WILAYAH = ['KEPALA DUSUN', 'KETUA RT'];
+      const targetIdUser = editingUser?.id_user || json.id_user;
+
+      if (ROLE_BUTUH_WILAYAH.includes(payload.role) && targetIdUser) {
+        const wilayahRes = await apiFetch(`${API_BASE}/users/${targetIdUser}/wilayah`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ role: payload.role, id_sls, id_dusun })
+        });
+        const wilayahJson = await wilayahRes.json();
+        if (!wilayahRes.ok || !wilayahJson.success) {
+          throw new Error(wilayahJson.message || 'User tersimpan, tapi gagal menyimpan wilayah tugas.');
+        }
+      }
 
       showNotification(editingUser ? 'Data user berhasil diperbarui' : 'User baru berhasil ditambahkan');
       setShowUserModal(false);
@@ -754,6 +785,8 @@ const AdminPage = () => {
         <UserModal
           user={editingUser}
           currentUserRole={currentUser.role}
+          wilayahHierarchy={wilayahHierarchy}
+          apiFetch={apiFetch}
           onSave={handleSaveUser}
           onClose={() => { setShowUserModal(false); setEditingUser(null); }}
         />
@@ -768,7 +801,9 @@ const AdminPage = () => {
 // ==========================================
 // 3. COMPONENT: USER MODAL (FORM CRUD)
 // ==========================================
-const UserModal = ({ user, currentUserRole, onSave, onClose }) => {
+const ROLE_BUTUH_WILAYAH = ['KEPALA DUSUN', 'KETUA RT'];
+
+const UserModal = ({ user, currentUserRole, wilayahHierarchy, apiFetch, onSave, onClose }) => {
   const [formData, setFormData] = useState({
     email: user?.email || '',
     password: '',
@@ -776,6 +811,38 @@ const UserModal = ({ user, currentUserRole, onSave, onClose }) => {
     role: user?.role || 'OPERATOR SID'
   });
   const [isSaving, setIsSaving] = useState(false);
+
+  // State khusus untuk pemilihan wilayah tugas
+  const [filterDesaWilayah, setFilterDesaWilayah] = useState('');
+  const [selectedDusun, setSelectedDusun] = useState('');
+  const [selectedSls, setSelectedSls] = useState('');
+  const [isLoadingWilayahLama, setIsLoadingWilayahLama] = useState(false);
+
+  // Kalau sedang edit user yang sudah punya wilayah tugas, ambil datanya supaya
+  // dropdown ter-prefill dengan pilihan yang sudah ada (bukan mulai dari kosong).
+  useEffect(() => {
+    const ambilWilayahLama = async () => {
+      if (!user || !ROLE_BUTUH_WILAYAH.includes(user.role) || !apiFetch) return;
+      setIsLoadingWilayahLama(true);
+      try {
+        const res = await apiFetch(`/api/admin/users/${user.id_user}/wilayah`);
+        const json = await res.json();
+        if (res.ok && json.success && json.data.length > 0) {
+          const wilayahPertama = json.data[0];
+          setSelectedSls(wilayahPertama.id_sls);
+          setSelectedDusun(wilayahPertama.id_dusun);
+          const dusunTerkait = wilayahHierarchy.dusun.find(d => d.id === wilayahPertama.id_dusun);
+          if (dusunTerkait) setFilterDesaWilayah(dusunTerkait.id_desa);
+        }
+      } catch (err) {
+        console.error('Gagal memuat wilayah tugas lama', err);
+      } finally {
+        setIsLoadingWilayahLama(false);
+      }
+    };
+    ambilWilayahLama();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
 
   const availableRoles = useMemo(() => {
     if (currentUserRole === 'SUPERADMIN') {
@@ -799,7 +866,10 @@ const UserModal = ({ user, currentUserRole, onSave, onClose }) => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setIsSaving(true);
-    await onSave(formData);
+    const payload = { ...formData };
+    if (formData.role === 'KETUA RT') payload.id_sls = selectedSls;
+    if (formData.role === 'KEPALA DUSUN') payload.id_dusun = selectedDusun;
+    await onSave(payload);
     setIsSaving(false);
   };
 
@@ -866,6 +936,90 @@ const UserModal = ({ user, currentUserRole, onSave, onClose }) => {
               ))}
             </select>
           </div>
+
+	  {formData.role === 'KETUA RT' && (
+            <div className="space-y-3 p-4 bg-blue-50 rounded-xl border border-blue-100">
+              <p className="text-sm font-bold text-blue-900">Wilayah Tugas (SLS/RT)</p>
+              {isLoadingWilayahLama ? (
+                <p className="text-xs text-gray-500">Memuat wilayah tugas saat ini...</p>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1">Desa</label>
+                    <select
+                      value={filterDesaWilayah}
+                      onChange={(e) => { setFilterDesaWilayah(e.target.value); setSelectedDusun(''); setSelectedSls(''); }}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                    >
+                      <option value="">Pilih Desa</option>
+                      {wilayahHierarchy.desa.map(d => <option key={d.id} value={d.id}>{d.nama}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1">Dusun</label>
+                    <select
+                      value={selectedDusun}
+                      onChange={(e) => { setSelectedDusun(e.target.value); setSelectedSls(''); }}
+                      disabled={!filterDesaWilayah}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                    >
+                      <option value="">Pilih Dusun</option>
+                      {wilayahHierarchy.dusun.filter(d => d.id_desa === filterDesaWilayah).map(d => <option key={d.id} value={d.id}>{d.nama}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1">SLS / RT</label>
+                    <select
+                      value={selectedSls}
+                      onChange={(e) => setSelectedSls(e.target.value)}
+                      disabled={!selectedDusun}
+                      required
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                    >
+                      <option value="">Pilih SLS/RT</option>
+                      {wilayahHierarchy.sls.filter(s => s.id_dusun === selectedDusun).map(s => <option key={s.id} value={s.id}>{s.nama}</option>)}
+                    </select>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {formData.role === 'KEPALA DUSUN' && (
+            <div className="space-y-3 p-4 bg-blue-50 rounded-xl border border-blue-100">
+              <p className="text-sm font-bold text-blue-900">Wilayah Tugas (Dusun)</p>
+              {isLoadingWilayahLama ? (
+                <p className="text-xs text-gray-500">Memuat wilayah tugas saat ini...</p>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1">Desa</label>
+                    <select
+                      value={filterDesaWilayah}
+                      onChange={(e) => { setFilterDesaWilayah(e.target.value); setSelectedDusun(''); }}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                    >
+                      <option value="">Pilih Desa</option>
+                      {wilayahHierarchy.desa.map(d => <option key={d.id} value={d.id}>{d.nama}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1">Dusun</label>
+                    <select
+                      value={selectedDusun}
+                      onChange={(e) => setSelectedDusun(e.target.value)}
+                      disabled={!filterDesaWilayah}
+                      required
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                    >
+                      <option value="">Pilih Dusun</option>
+                      {wilayahHierarchy.dusun.filter(d => d.id_desa === filterDesaWilayah).map(d => <option key={d.id} value={d.id}>{d.nama}</option>)}
+                    </select>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           <div className="flex gap-3 pt-4 border-t border-gray-100">
             <button
