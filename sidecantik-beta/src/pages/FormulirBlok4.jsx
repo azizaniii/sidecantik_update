@@ -2,6 +2,14 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ClipboardList, ArrowLeft, CheckCircle, AlertTriangle, X, Check, CheckCircle2 } from 'lucide-react';
 
+// Endpoint approval berjenjang per role. Role selain ketiga ini tidak
+// menampilkan tombol Approve/Reject sama sekali (misal KETUA RT).
+const ENDPOINT_APPROVAL_PER_ROLE = {
+  'KEPALA DUSUN': 'approval-kadus',
+  'SEKRETARIS DESA': 'approval-sekdes',
+  'KEPALA DESA': 'approval-kades',
+};
+
 export default function FormBlokCatatan() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -17,8 +25,28 @@ export default function FormBlokCatatan() {
   const [catatanRevisi, setCatatanRevisi] = useState('');
   const [isSkip, setIsSkip] = useState(false);
   const [isKadus, setIsKadus] = useState(false);
+  const [isProsesApproval, setIsProsesApproval] = useState(false);
   const [sls, setSls] = useState('');
 
+  // Endpoint approval yang berlaku untuk role yang sedang login (kalau ada)
+  const endpointApproval = userData ? ENDPOINT_APPROVAL_PER_ROLE[userData.role?.toUpperCase()] : null;
+  const bisaApproval = Boolean(endpointApproval);
+
+  // Helper fetch terpusat: selalu menyisipkan token, auto-redirect kalau 401
+  const apiFetch = async (url, options = {}) => {
+    const token = localStorage.getItem('auth_token');
+    const res = await fetch(url, {
+      ...options,
+      headers: { ...(options.headers || {}), 'Authorization': `Bearer ${token}` },
+    });
+    if (res.status === 401) {
+      localStorage.removeItem('auth_user');
+      localStorage.removeItem('auth_token');
+      navigate('/login');
+      throw new Error('Sesi Anda telah berakhir. Silakan login kembali.');
+    }
+    return res;
+  };
 
   useEffect(() => {
     const dataUser = JSON.parse(localStorage.getItem('auth_user')) || [];
@@ -83,7 +111,9 @@ export default function FormBlokCatatan() {
     }
   };
 
-  const handleApprove = (e) => {
+  // Simpan status hasil approval ke localStorage secara lokal, sinkron
+  // dengan status yang baru saja dikonfirmasi oleh backend.
+  const updateStatusLokal = (statusBaru, catatanRejectBaru = null) => {
     let dataKeluargaLokal = JSON.parse(localStorage.getItem('data_keluarga')) || [];
     const indexKeluarga = dataKeluargaLokal.findIndex(k => k.id_keluarga === idKeluarga);
 
@@ -91,32 +121,73 @@ export default function FormBlokCatatan() {
       dataKeluargaLokal[indexKeluarga] = {
         ...dataKeluargaLokal[indexKeluarga],
         catatan: catatan,
-        status: 'approved',
-        synced: false
+        ...(catatanRejectBaru !== null ? { catatan_reject: catatanRejectBaru } : {}),
+        status: statusBaru,
+        synced: true,
       };
       localStorage.setItem('data_keluarga', JSON.stringify(dataKeluargaLokal));
     }
+  };
 
-    navigate(`/list-keluarga?id_sls=${sls}`);
-  }
+  // Approve/Reject sekarang memanggil endpoint approval berjenjang di backend
+  // (approval-kadus / approval-sekdes / approval-kades), bukan menulis status
+  // langsung ke localStorage. Endpoint dipilih otomatis sesuai role yang login.
+  const handleApprove = async () => {
+    if (!bisaApproval) return;
+    setIsProsesApproval(true);
+    try {
+      const response = await apiFetch(`/api/keluarga/${endpointApproval}/${idKeluarga}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ aksi: 'terima', catatan }),
+      });
+      const json = await response.json();
+      if (!response.ok || !json.success) throw new Error(json.message || 'Gagal memproses approval di server');
 
-  const handleReject = (e) => {
-    let dataKeluargaLokal = JSON.parse(localStorage.getItem('data_keluarga')) || [];
-    const indexKeluarga = dataKeluargaLokal.findIndex(k => k.id_keluarga === idKeluarga);
-
-    if (indexKeluarga !== -1) {
-      dataKeluargaLokal[indexKeluarga] = {
-        ...dataKeluargaLokal[indexKeluarga],
-        catatan: catatan,
-        catatan_reject: catatanRevisi,
-        status: 'rejected',
-        synced: false
+      // Status baru ditentukan backend, tapi kita tahu urutannya di frontend
+      const statusBaruPerRole = {
+        'KEPALA DUSUN': 'menunggu_sekdes',
+        'SEKRETARIS DESA': 'menunggu_kades',
+        'KEPALA DESA': 'disetujui',
       };
-      localStorage.setItem('data_keluarga', JSON.stringify(dataKeluargaLokal));
+      updateStatusLokal(statusBaruPerRole[userData.role?.toUpperCase()]);
+
+      navigate(`/list-keluarga?id_sls=${sls}`);
+    } catch (err) {
+      console.error(err);
+      alert(err.message || 'Gagal memproses approval. Pastikan Anda online.');
+    } finally {
+      setIsProsesApproval(false);
     }
-    
-    navigate(`/list-keluarga?id_sls=${sls}`);
-  }
+  };
+
+  const handleReject = async (catatanRevisiTerkirim) => {
+    if (!bisaApproval) return;
+    setIsProsesApproval(true);
+    try {
+      const response = await apiFetch(`/api/keluarga/${endpointApproval}/${idKeluarga}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ aksi: 'tolak', catatan: catatanRevisiTerkirim }),
+      });
+      const json = await response.json();
+      if (!response.ok || !json.success) throw new Error(json.message || 'Gagal memproses penolakan di server');
+
+      const statusBaruPerRole = {
+        'KEPALA DUSUN': 'ditolak_kadus',
+        'SEKRETARIS DESA': 'ditolak_sekdes',
+        'KEPALA DESA': 'ditolak_kades',
+      };
+      updateStatusLokal(statusBaruPerRole[userData.role?.toUpperCase()], catatanRevisiTerkirim);
+
+      navigate(`/list-keluarga?id_sls=${sls}`);
+    } catch (err) {
+      console.error(err);
+      alert(err.message || 'Gagal memproses penolakan. Pastikan Anda online.');
+    } finally {
+      setIsProsesApproval(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 relative overflow-hidden flex flex-col">
@@ -127,7 +198,7 @@ export default function FormBlokCatatan() {
       {/* Kontainer Utama */}
       <div className="flex-1 w-full max-w-lg mx-auto p-4 md:p-8 relative z-10 pb-28 flex flex-col justify-center">
         <div className="bg-white/80 backdrop-blur-md p-6 md:p-8 rounded-2xl shadow-xl border border-white/30">
-          
+
           <div className="flex items-center space-x-4 mb-8">
             <div className="bg-gradient-to-br from-teal-400 to-blue-500 p-3 rounded-xl text-white shadow-md">
               <ClipboardList className="w-6 h-6" />
@@ -175,30 +246,30 @@ export default function FormBlokCatatan() {
               <span className="inline">Blok III</span>
             )}
           </button>
-          
-          {/* Logika Tombol Aksi Dinamis */}
-          {(userData && userData.role === 'KEPALA DUSUN') ? (
-            <div className="flex w-1/2 gap-2">
-        {/* Tombol Reject */}
-            <button
-              type="button"
-              onClick={() => setShowRejectModal(true)}
-              className="w-1/2 bg-gradient-to-r from-rose-500 to-red-600 hover:from-rose-600 hover:to-red-700 text-white font-bold py-3.5 rounded-xl shadow-md hover:shadow-lg transition flex items-center justify-center space-x-1"
-            >
-              {/* <X className="w-5 h-5" /> */}
-              <span className="text-sm">Reject</span>
-            </button>
 
-            {/* Tombol Approve */}
-            <button
-              type="button"
-              onClick={() => setShowApproveModal(true)}
-              className="w-1/2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-bold py-3.5 rounded-xl shadow-md hover:shadow-lg transition flex items-center justify-center space-x-1"
-            >
-              {/* <Check className="w-5 h-5" /> */}
-              <span className="text-sm">Approve</span>
-            </button>
-          </div>
+          {/* Logika Tombol Aksi Dinamis: Approve/Reject untuk Kadus/Sekdes/Kades, Simpan untuk RT */}
+          {bisaApproval ? (
+            <div className="flex w-1/2 gap-2">
+              {/* Tombol Reject */}
+              <button
+                type="button"
+                onClick={() => setShowRejectModal(true)}
+                disabled={isProsesApproval}
+                className="w-1/2 bg-gradient-to-r from-rose-500 to-red-600 hover:from-rose-600 hover:to-red-700 text-white font-bold py-3.5 rounded-xl shadow-md hover:shadow-lg transition flex items-center justify-center space-x-1 disabled:opacity-50"
+              >
+                <span className="text-sm">Reject</span>
+              </button>
+
+              {/* Tombol Approve */}
+              <button
+                type="button"
+                onClick={() => setShowApproveModal(true)}
+                disabled={isProsesApproval}
+                className="w-1/2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-bold py-3.5 rounded-xl shadow-md hover:shadow-lg transition flex items-center justify-center space-x-1 disabled:opacity-50"
+              >
+                <span className="text-sm">{isProsesApproval ? 'Memproses...' : 'Approve'}</span>
+              </button>
+            </div>
           ) : (
             // Tampilan untuk RT: Simpan & Selesai
             <button
@@ -261,17 +332,19 @@ export default function FormBlokCatatan() {
               <button
                 type="button"
                 onClick={() => setShowApproveModal(false)}
-                className="w-1/2 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold py-3 rounded-xl transition text-sm"
+                disabled={isProsesApproval}
+                className="w-1/2 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold py-3 rounded-xl transition text-sm disabled:opacity-50"
               >
                 Batal
               </button>
               <button
                 type="button"
+                disabled={isProsesApproval}
                 onClick={() => {
                   setShowApproveModal(false);
                   handleApprove(); // Panggil fungsi utama kirim data ke backend
                 }}
-                className="w-1/2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-bold py-3 rounded-xl shadow-md transition text-sm"
+                className="w-1/2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-bold py-3 rounded-xl shadow-md transition text-sm disabled:opacity-50"
               >
                 Ya, Approve
               </button>
@@ -316,20 +389,21 @@ export default function FormBlokCatatan() {
                   setShowRejectModal(false);
                   setCatatanRevisi('');
                 }}
-                className="w-1/2 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold py-3 rounded-xl transition text-sm"
+                disabled={isProsesApproval}
+                className="w-1/2 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold py-3 rounded-xl transition text-sm disabled:opacity-50"
               >
                 Batal
               </button>
               <button
                 type="button"
-                disabled={!catatanRevisi.trim()}
+                disabled={!catatanRevisi.trim() || isProsesApproval}
                 onClick={() => {
                   setShowRejectModal(false);
                   handleReject(catatanRevisi);
                   setCatatanRevisi('');
                 }}
                 className={`w-1/2 font-bold py-3 rounded-xl shadow-md transition text-sm text-white ${
-                  catatanRevisi.trim()
+                  catatanRevisi.trim() && !isProsesApproval
                     ? 'bg-gradient-to-r from-rose-500 to-red-600 hover:from-rose-600 hover:to-red-700 cursor-pointer shadow-md'
                     : 'bg-slate-300 cursor-not-allowed shadow-none'
                 }`}

@@ -30,8 +30,10 @@ router.post('/login', async (req, res) => {
       nama: user.nama,
       email: user.email,
       role: user.role,
-      daftar_sls: daftar_sls
+      daftar_sls: daftar_sls,
+      id_desa: user.id_desa || null
     };
+
     const token = jwt.sign(tokenPayload, process.env.JWT_SECRET, { expiresIn: '8h' });
 
     res.status(200).json({
@@ -42,7 +44,8 @@ router.post('/login', async (req, res) => {
         nama: user.nama,
         email: user.email,
         daftar_sls: daftar_sls,
-        role: user.role
+        role: user.role,
+        id_desa: user.id_desa || null
       }
     });
   } catch (error) {

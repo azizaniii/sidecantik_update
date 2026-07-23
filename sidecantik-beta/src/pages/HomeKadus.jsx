@@ -63,6 +63,8 @@ export default function Home() {
 
   const handleLogout = () => {
     localStorage.removeItem('auth_user');
+    // FIX: token juga harus dihapus saat logout
+    localStorage.removeItem('auth_token');
     navigate('/login');
   };
 
@@ -74,10 +76,32 @@ export default function Home() {
       showToast('Memulai sinkronisasi data dari server...', 'success');
 
       const userData = JSON.parse(localStorage.getItem('auth_user'));
+      // FIX: ambil token JWT dari localStorage. Backend mewajibkan header
+      // Authorization di semua endpoint /api/keluarga, /api/penduduk, /api/sls.
+      const token = localStorage.getItem('auth_token');
+
+      if (!token) {
+        showToast('Sesi login tidak ditemukan. Silakan login kembali.', 'error');
+        navigate('/login');
+        return;
+      }
+
       if (!userData || !userData.daftar_sls || userData.daftar_sls.length === 0) {
         showToast('Gagal: Kamu belum memiliki wilayah tugas.', 'error');
         return;
       }
+
+      // Helper: kalau server balas 401, bersihkan sesi & lempar ke login
+      // alih-alih diam-diam melanjutkan sync dengan data kosong.
+      const cekUnauthorized = (res) => {
+        if (res.status === 401) {
+          localStorage.removeItem('auth_user');
+          localStorage.removeItem('auth_token');
+          navigate('/login');
+          return true;
+        }
+        return false;
+      };
 
       // ==========================================
       // TAHAP 1: PUSH (UPLOAD DATA LOKAL KE SERVER)
@@ -107,18 +131,26 @@ export default function Home() {
         // Upload Keluarga
         const resKeluarga = await fetch('/api/keluarga/sync', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
           body: JSON.stringify(payloadKeluarga)
         });
+        if (cekUnauthorized(resKeluarga)) return;
         if (!resKeluarga.ok) throw new Error("Gagal upload data keluarga.");
 
         // Upload Penduduk
         if (payloadPenduduk.length > 0) {
           const resPenduduk = await fetch('/api/penduduk/sync', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
             body: JSON.stringify(payloadPenduduk)
           });
+          if (cekUnauthorized(resPenduduk)) return;
           if (!resPenduduk.ok) throw new Error("Gagal upload data penduduk.");
         }
       }
@@ -133,13 +165,19 @@ export default function Home() {
       // Looping untuk menarik data berdasarkan SLS yang dimiliki petugas
       for (const id_sls of userData.daftar_sls) {
         // Tarik data SLS
-        const resSLSPull = await fetch(`/api/sls/${id_sls}`);
+        const resSLSPull = await fetch(`/api/sls/${id_sls}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (cekUnauthorized(resSLSPull)) return;
         if (resSLSPull.ok){
           const data = await resSLSPull.json();
           semuaSLS = [...semuaSLS, ...data];
         }
         // 1. Tarik Data Keluarga
-        const resKeluargaPull = await fetch(`/api/keluarga/submitted/sls/${id_sls}`);
+        const resKeluargaPull = await fetch(`/api/keluarga/submitted/sls/${id_sls}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (cekUnauthorized(resKeluargaPull)) return;
         if (resKeluargaPull.ok) {
           const data = await resKeluargaPull.json();
           // Beri tanda bahwa data dari server ini sudah tersinkronisasi
@@ -148,7 +186,10 @@ export default function Home() {
           
           // 2. Tarik Data Penduduk untuk setiap keluarga yang ditarik
           for (const keluarga of dataSynced) {
-            const resPendudukPull = await fetch(`/api/penduduk/keluarga/${keluarga.id_keluarga}`);
+            const resPendudukPull = await fetch(`/api/penduduk/keluarga/${keluarga.id_keluarga}`, {
+              headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (cekUnauthorized(resPendudukPull)) return;
             if (resPendudukPull.ok) {
               const pendudukData = await resPendudukPull.json();
               const pendudukSynced = pendudukData.map(item => ({ ...item, status_dokumen_blok3: item.status_dokumen, synced: true}));
