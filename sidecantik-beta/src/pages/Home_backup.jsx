@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import {
-  Users,
-  FileText,
-  UserPlus,
-  LogOut,
+import { 
+  Users, 
+  FileText, 
+  UserPlus, 
+  LogOut, 
   Activity,
   LayoutDashboard,
   Database,
@@ -16,7 +16,7 @@ import {
 export default function Home() {
   const navigate = useNavigate();
   const [userData, setUserData] = useState(null);
-
+  
   // State Statistik
   const [stats, setStats] = useState({
     totalKeluarga: 0,
@@ -63,9 +63,6 @@ export default function Home() {
 
   const handleLogout = () => {
     localStorage.removeItem('auth_user');
-    // FIX: token juga harus dihapus saat logout, kalau tidak sisa token lama
-    // masih tersimpan walau sesi sudah "keluar".
-    localStorage.removeItem('auth_token');
     navigate('/login');
   };
 
@@ -73,39 +70,14 @@ export default function Home() {
   const handleFullSync = async () => {
     try {
       // Tampilkan loading/spinner di UI (opsional, disesuaikan dengan state kamu)
-      setIsSyncing(true);
+      setIsSyncing(true); 
       showToast('Memulai sinkronisasi data dari server...', 'success');
 
       const userData = JSON.parse(localStorage.getItem('auth_user'));
-      // FIX: ambil token JWT dari localStorage. Backend sekarang mewajibkan header
-      // Authorization di semua endpoint /api/keluarga, /api/penduduk, /api/sls,
-      // jadi tanpa ini semua fetch di bawah akan gagal diam-diam (401) dan
-      // localStorage ditimpa data kosong/parsial.
-      const token = localStorage.getItem('auth_token');
-
-      if (!token) {
-        showToast('Sesi login tidak ditemukan. Silakan login kembali.', 'error');
-        navigate('/login');
-        return;
-      }
-
       if (!userData || !userData.daftar_sls || userData.daftar_sls.length === 0) {
         showToast('Gagal: Kamu belum memiliki wilayah tugas.', 'error');
         return;
       }
-
-      // Helper kecil: kalau server balas 401, token sudah tidak valid/kedaluwarsa.
-      // Bersihkan sesi dan lempar user ke halaman login alih-alih diam-diam
-      // melanjutkan sync dengan data kosong.
-      const cekUnauthorized = (res) => {
-        if (res.status === 401) {
-          localStorage.removeItem('auth_user');
-          localStorage.removeItem('auth_token');
-          navigate('/login');
-          return true;
-        }
-        return false;
-      };
 
       // ==========================================
       // TAHAP 1: PUSH (UPLOAD DATA LOKAL KE SERVER)
@@ -116,7 +88,7 @@ export default function Home() {
 
       // Filter data yang siap di-upload
       const keluargaSiapSync = dataKeluargaLokal.filter(k => k.status === 'selesai' && k.synced === false);
-
+      
       if (keluargaSiapSync.length > 0) {
         // Gabungkan dengan draf Blok 2
         const payloadKeluarga = keluargaSiapSync.map(keluarga => {
@@ -125,40 +97,29 @@ export default function Home() {
         });
 
         const listIdKeluargaSync = keluargaSiapSync.map(k => k.id_keluarga);
-
+        
         // Ambil penduduk dari keluarga yang ikut di-sync
-        const payloadPenduduk = dataPendudukLokal.filter(p =>
-          listIdKeluargaSync.includes(p.id_keluarga) &&
+        const payloadPenduduk = dataPendudukLokal.filter(p => 
+          listIdKeluargaSync.includes(p.id_keluarga) && 
           p.status_dokumen_blok3 === 'draft'
         );
         console.log(payloadKeluarga);
         console.log(payloadPenduduk);
-
         // Upload Keluarga
-        // FIX: tambahkan header Authorization
         const resKeluarga = await fetch('/api/keluarga/sync', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payloadKeluarga)
         });
-        if (cekUnauthorized(resKeluarga)) return;
         if (!resKeluarga.ok) throw new Error("Gagal upload data keluarga.");
 
         // Upload Penduduk
         if (payloadPenduduk.length > 0) {
-          // FIX: tambahkan header Authorization
           const resPenduduk = await fetch('/api/penduduk/sync', {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${token}`
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payloadPenduduk)
           });
-          if (cekUnauthorized(resPenduduk)) return;
           if (!resPenduduk.ok) throw new Error("Gagal upload data penduduk.");
         }
       }
@@ -173,35 +134,22 @@ export default function Home() {
       // Looping untuk menarik data berdasarkan SLS yang dimiliki petugas
       for (const id_sls of userData.daftar_sls) {
         // Tarik data SLS
-        // FIX: tambahkan header Authorization
-        const resSLSPull = await fetch(`/api/sls/${id_sls}`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        if (cekUnauthorized(resSLSPull)) return;
-        if (resSLSPull.ok) {
+        const resSLSPull = await fetch(`/api/sls/${id_sls}`);
+        if (resSLSPull.ok){
           const data = await resSLSPull.json();
           semuaSLS = [...semuaSLS, ...data];
         }
-
         // 1. Tarik Data Keluarga
-        // FIX: tambahkan header Authorization
-        const resKeluargaPull = await fetch(`/api/keluarga/sls/${id_sls}`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        if (cekUnauthorized(resKeluargaPull)) return;
+        const resKeluargaPull = await fetch(`/api/keluarga/sls/${id_sls}`);
         if (resKeluargaPull.ok) {
           const data = await resKeluargaPull.json();
           // Beri tanda bahwa data dari server ini sudah tersinkronisasi
           const dataSynced = data.map(item => ({ ...item, synced: true, status: item.status || 'open' }));
           semuaKeluargaServer = [...semuaKeluargaServer, ...dataSynced];
-
+          
           // 2. Tarik Data Penduduk untuk setiap keluarga yang ditarik
           for (const keluarga of dataSynced) {
-            // FIX: tambahkan header Authorization
-            const resPendudukPull = await fetch(`/api/penduduk/keluarga/${keluarga.id_keluarga}`, {
-              headers: { 'Authorization': `Bearer ${token}` }
-            });
-            if (cekUnauthorized(resPendudukPull)) return;
+            const resPendudukPull = await fetch(`/api/penduduk/keluarga/${keluarga.id_keluarga}`);
             if (resPendudukPull.ok) {
               const pendudukData = await resPendudukPull.json();
               const pendudukSynced = pendudukData.map(item => ({ ...item, status_dokumen_blok3: item.status_dokumen, synced: true}));
@@ -248,7 +196,7 @@ export default function Home() {
         const keluargaDiLokal = finalKeluargaLokal.find(k => k.id_keluarga === draf.id_keluarga);
         // Jika masih draft, pertahankan draf blok 2-nya!
         if (keluargaDiLokal && (keluargaDiLokal.status === 'draft' || keluargaDiLokal.synced === false)) {
-          return true;
+          return true; 
         }
         return false; // Hapus jika sudah di-sync
       });
@@ -265,13 +213,13 @@ export default function Home() {
       setIsFabOpen(false);
     }
   };
-
+  
 
   if (!userData) return null;
 
   return (
     <div className="relative min-h-screen bg-slate-50 p-2 md:p-8 max-w-5xl mx-auto flex flex-col gap-8 font-sans">
-
+      
       {/* Toast Notification */}
       {toast.show && (
         <div className={`fixed top-5 right-5 px-4 py-3 rounded-md text-white z-50 transition-opacity shadow-lg
@@ -291,8 +239,8 @@ export default function Home() {
             <h1 className="text-xl font-bold text-gray-800 tracking-tight">{userData.nama || 'Petugas Pendataan'}</h1>
           </div>
         </div>
-
-
+        
+        
         {/* Tombol Logout dipindah ke FAB, Header menjadi lebih lega */}
         <div className="hidden sm:flex items-center">
           <span className="text-xs font-semibold px-3 py-1 bg-blue-50 text-blue-600 rounded-full border border-blue-100">
@@ -307,7 +255,7 @@ export default function Home() {
           <LayoutDashboard className="text-teal-500" size={24} />
           <h2 className="text-xl font-extrabold text-gray-800">Dashboard Ringkasan</h2>
         </div>
-
+        
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 relative overflow-hidden group">
             <div className="absolute top-0 right-0 w-24 h-24 bg-blue-50 rounded-bl-full -z-0 transition-transform group-hover:scale-110"></div>
@@ -361,7 +309,7 @@ export default function Home() {
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {(userData && userData.role === 'KETUA RT') ? (
-            <Link
+            <Link 
               to={`/list-keluarga?id_sls=${userData.daftar_sls}`}
               className="flex items-center p-5 bg-white rounded-2xl shadow-sm border border-gray-100 hover:shadow-md hover:-translate-y-1 transition-all duration-300 group"
             >
@@ -374,7 +322,7 @@ export default function Home() {
               </div>
             </Link>
           ):(
-            <Link
+            <Link 
             to="/list-sls"
             className="flex items-center p-5 bg-white rounded-2xl shadow-sm border border-gray-100 hover:shadow-md hover:-translate-y-1 transition-all duration-300 group"
             >
@@ -388,7 +336,7 @@ export default function Home() {
             </Link>
           )}
 
-          {/* <Link
+          {/* <Link 
             to="/form-keluarga"
             className="flex items-center p-5 bg-white rounded-2xl shadow-sm border border-gray-100 hover:shadow-md hover:-translate-y-1 transition-all duration-300 group"
           >
@@ -415,12 +363,12 @@ export default function Home() {
         <div className={`flex flex-col items-end gap-3 transition-all duration-300 origin-bottom ${
             isFabOpen ? 'opacity-100 scale-100 translate-y-0' : 'opacity-0 scale-90 translate-y-10 pointer-events-none'
           }`}>
-
+          
           {/* Tombol Logout di dalam FAB */}
           <div className='flex items-center text-red-500 gap-2'>
             {/* <span className="font-semibold pr-1">Keluar (Logout)</span> */}
-            <button
-              onClick={() => { setIsFabOpen(false); handleLogout(); }}
+            <button 
+              onClick={() => { setIsFabOpen(false); handleLogout(); }} 
               className="flex items-center gap-2 bg-white text-red-500 p-4 rounded-full shadow-lg border border-gray-100 hover:bg-red-50 transition"
               >
               <LogOut size={28} />
@@ -433,12 +381,12 @@ export default function Home() {
             {/* <span className="font-semibold pr-1">
                 {isSyncing ? 'Sedang Menarik Data...' : 'Sync Data Awal'}
             </span> */}
-            <button
+            <button 
               onClick={handleFullSync}
               disabled={isSyncing}
               className={`flex items-center gap-2 p-4 rounded-full shadow-lg border transition ${
-                isSyncing
-                ? 'bg-teal-50 border-teal-100 text-teal-400 cursor-not-allowed'
+                isSyncing 
+                ? 'bg-teal-50 border-teal-100 text-teal-400 cursor-not-allowed' 
                 : 'bg-white border-gray-100 text-teal-600 hover:bg-teal-50'
               }`}
               >
@@ -454,8 +402,8 @@ export default function Home() {
         <button
           onClick={() => setIsFabOpen(!isFabOpen)}
           className={`text-white p-4 rounded-full shadow-[0_8px_20px_rgba(45,212,191,0.4)] transition-all duration-300 hover:scale-110 focus:outline-none ${
-            isFabOpen
-              ? 'bg-red-400 rotate-90 shadow-red-200'
+            isFabOpen 
+              ? 'bg-red-400 rotate-90 shadow-red-200' 
               : 'bg-gradient-to-r from-blue-400 to-teal-400 rotate-0'
           }`}
         >

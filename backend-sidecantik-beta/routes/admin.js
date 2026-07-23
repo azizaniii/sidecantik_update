@@ -278,4 +278,140 @@ router.put('/users/:id_user/wilayah', requireRole('SUPERADMIN', 'KEPALA DESA', '
   }
 });
 
+// =========================================================
+// FITUR SQL CONSOLE — hanya untuk role tertentu (lihat mapping)
+// Ditambahkan di Langkah 5, memakai db, requireRole, crypto
+// yang SUDAH di-require di bagian atas file ini.
+// =========================================================
+
+const { logSqlAudit } = require('../utils/sqlAudit');
+
+// Mapping role -> statement SQL yang diizinkan.
+// SUPERADMIN   = full access (termasuk DROP/ALTER/TRUNCATE)
+// OPERATOR SID = read + write (SELECT/INSERT/UPDATE/DELETE)
+// KEPALA DESA  = read-only (SELECT saja)
+const SQL_ROLE_PERMISSIONS = {
+  'SUPERADMIN': ['SELECT', 'SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER', 'DROP', 'TRUNCATE', 'RENAME'],
+  'OPERATOR SID': ['SELECT', 'SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN', 'INSERT', 'UPDATE', 'DELETE'],
+  'KEPALA DESA': ['SELECT', 'SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN'],
+};
+
+// Statement yang butuh konfirmasi eksplisit dari frontend sebelum dieksekusi,
+// karena sifatnya mengubah/menghapus data secara permanen.
+const SQL_DESTRUCTIVE_STATEMENTS = ['UPDATE', 'DELETE', 'DROP', 'TRUNCATE', 'ALTER', 'RENAME'];
+
+// Ambil kata pertama dari query (setelah komentar dibuang) sebagai tipe statement.
+// Contoh: "SELECT * FROM users" -> "SELECT"
+function getSqlStatementType(sql) {
+  const cleaned = sql
+    .replace(/--.*$/gm, '')          // buang komentar single-line "-- ..."
+    .replace(/\/\*[\s\S]*?\*\//g, '') // buang komentar /* ... */
+    .trim();
+  const match = cleaned.match(/^([a-zA-Z]+)/);
+  return match ? match[1].toUpperCase() : null;
+}
+
+// Cegah user memasukkan lebih dari satu statement dipisah titik koma,
+// misal: "SELECT 1; DROP TABLE users;" — ini teknik injeksi umum.
+function hasMultipleSqlStatements(sql) {
+  const cleaned = sql
+    .replace(/--.*$/gm, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .trim()
+    .replace(/;\s*$/, ''); // izinkan satu titik koma di akhir saja
+  return cleaned.includes(';');
+}
+
+// 8. ENDPOINT: Eksekusi SQL manual (SQL Console)
+router.post('/sql/execute', requireRole('SUPERADMIN', 'OPERATOR SID', 'KEPALA DESA'), async (req, res) => {
+  const { query, confirm } = req.body;
+
+  // req.user berasal dari middleware verifyToken (isi JWT hasil login)
+  const role = req.user.role;
+  const auditMeta = {
+    idUser: req.user.id_user,
+    namaUser: req.user.nama,
+    role: role,
+    ip: req.ip,
+  };
+
+  if (!query || typeof query !== 'string' || !query.trim()) {
+    return res.status(400).json({ success: false, message: 'Query tidak boleh kosong.' });
+  }
+
+  if (hasMultipleSqlStatements(query)) {
+    return res.status(400).json({ success: false, message: 'Hanya satu statement SQL yang diizinkan per eksekusi.' });
+  }
+
+  const statementType = getSqlStatementType(query);
+  const allowedStatements = SQL_ROLE_PERMISSIONS[role] || [];
+
+  if (!statementType || !allowedStatements.includes(statementType)) {
+    await logSqlAudit({
+      ...auditMeta,
+      statementType,
+      queryText: query,
+      success: false,
+      errorMessage: `Role ${role} tidak diizinkan menjalankan statement ${statementType}`,
+    });
+    return res.status(403).json({
+      success: false,
+      message: `Role kamu (${role}) tidak memiliki izin menjalankan statement ${statementType || 'ini'}.`,
+    });
+  }
+
+  // Statement yang sifatnya merusak/mengubah data butuh konfirmasi eksplisit
+  // dari frontend (confirm: true) sebelum benar-benar dieksekusi.
+  if (SQL_DESTRUCTIVE_STATEMENTS.includes(statementType) && confirm !== true) {
+    return res.status(428).json({
+      success: false,
+      requireConfirm: true,
+      statementType,
+      message: `Statement ${statementType} bersifat mengubah/menghapus data. Konfirmasi diperlukan untuk melanjutkan.`,
+    });
+  }
+
+  let connection;
+  try {
+    connection = await db.getConnection();
+    const [rows, fields] = await connection.query(query);
+
+    await logSqlAudit({ ...auditMeta, statementType, queryText: query, success: true });
+
+    return res.json({
+      success: true,
+      statementType,
+      result: rows,
+      fields: fields ? fields.map((f) => f.name) : null,
+      affectedRows: rows && rows.affectedRows !== undefined ? rows.affectedRows : undefined,
+    });
+  } catch (error) {
+    await logSqlAudit({
+      ...auditMeta,
+      statementType,
+      queryText: query,
+      success: false,
+      errorMessage: error.message,
+    });
+    return res.status(400).json({ success: false, message: `Query gagal dijalankan: ${error.message}` });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// 9. ENDPOINT: Riwayat audit log SQL (hanya SUPERADMIN & OPERATOR SID yang boleh lihat)
+router.get('/sql/history', requireRole('SUPERADMIN', 'OPERATOR SID'), async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      `SELECT id, id_user, nama_user, role, statement_type, query_text, success, error_message, executed_at
+       FROM sql_audit_log
+       ORDER BY executed_at DESC
+       LIMIT 100`
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('Error ambil riwayat SQL:', error);
+    res.status(500).json({ success: false, message: 'Gagal mengambil riwayat query.' });
+  }
+});
 module.exports = router;

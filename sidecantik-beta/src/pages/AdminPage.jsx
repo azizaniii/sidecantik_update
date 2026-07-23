@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import SqlConsoleTab from '../components/SqlConsoleTab';
 import {
   FiUsers, FiDatabase, FiHome, FiUpload, FiDownload, FiEdit2, FiTrash2,
   FiPlus, FiSearch, FiX, FiLogOut, FiRefreshCw
@@ -21,11 +22,12 @@ const TABLE_LABELS = {
 
 const TABLE_ORDER = ['penduduk', 'keluarga', 'anggota_keluarga', 'sls', 'dusun', 'desa', 'wilayah_tugas', 'users'];
 
-const NAV_ITEMS = [
+const ALL_NAV_ITEMS = [
   { id: 'dashboard', label: 'Dashboard Ringkasan', icon: FiHome },
   { id: 'data_kependudukan', label: 'Data Kependudukan', icon: FiUsers },
   { id: 'users', label: 'Manajemen Pengguna', icon: FiUsers },
-  { id: 'database', label: 'Kelola Database', icon: FiDatabase }
+  { id: 'database', label: 'Kelola Database', icon: FiDatabase },
+  { id: 'sql_console', label: 'SQL Console', icon: FiDatabase, roles: ['SUPERADMIN', 'OPERATOR SID', 'KEPALA DESA'] }
 ];
 
 // ==========================================
@@ -71,6 +73,12 @@ const AdminPage = () => {
   const [searchPenduduk, setSearchPenduduk] = useState('');
 // Wilayah hierarchy (Desa > Dusun > SLS), dipakai untuk form assign wilayah tugas
   const [wilayahHierarchy, setWilayahHierarchy] = useState({ desa: [], dusun: [], sls: [] });
+  // Filter menu berdasarkan role user yang sedang login — tab tanpa `roles`
+  // terbuka untuk semua, tab dengan `roles` hanya muncul kalau role user ada di daftar.
+  const NAV_ITEMS = useMemo(() => {
+    if (!currentUser) return [];
+    return ALL_NAV_ITEMS.filter(item => !item.roles || item.roles.includes(currentUser.role));
+  }, [currentUser]);
 
   // ---- Autentikasi dari Sesi Login API (localStorage) ----
   useEffect(() => {
@@ -776,6 +784,10 @@ const AdminPage = () => {
                 ))}
               </div>
             </div>
+          )}
+	{/* TAB: SQL CONSOLE */}
+          {activeTab === 'sql_console' && (
+            <SqlConsoleTab apiFetch={apiFetch} currentUser={currentUser} />
           )}
         </main>
       </div>
