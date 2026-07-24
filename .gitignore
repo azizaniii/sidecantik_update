@@ -8,5 +8,11 @@ build/
 **/dist/
 *.log
 .DS_Store
-init.sql
 update.sql
+
+# File export data (mengandung data pribadi warga, jangan commit)
+export_csv_*/
+export_csv_*.tar.gz
+export_semua_tabel_csv.sh
+export_struktur_db.sh
+struktur_sidecantik_*.sql

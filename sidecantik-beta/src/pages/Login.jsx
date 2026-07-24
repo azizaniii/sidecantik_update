@@ -121,7 +121,7 @@ export default function Login() {
           </form>
 
           <div className="mt-8 text-center">
-            <p className="text-xs text-gray-400 font-medium">Gunakan kredensial yang diberikan oleh Pemerintah Desa Medana untuk mengakses sistem.</p>
+            <p className="text-xs text-gray-400 font-medium">Gunakan kredensial yang diberikan oleh Operator SID atau Admin untuk mengakses sistem.</p>
           </div>
         </div>
       </div>
